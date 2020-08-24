@@ -18,7 +18,7 @@ The technical part of it is that you only need to change your ways in a very sli
 
 Obviously the first step is to add the VFPTransactions stored procedures to your DBC and set all insert/update/delete triggers to call into them. But that's also taken care of with a simple call of createorupdatetransactionlog.prg:
 ```
-Do createorupdatetransactionlog WITH "c:\path\to\yourdatabse.dbc"
+Do createorupdatetransactionlog WITH "c:\path\to\yourdatabase.dbc"
 ```
 or when you prefer and CD into the prgs directory or add it to SET PATH and/or SET PROCEDURE:
 ```
@@ -43,13 +43,13 @@ Just a side note on the thoughtwork flowing into this: In the initialisation pha
 The only other change in your project will be estblishcing the main \_vfp.Transactions object that's obviously a prerequisie of making these calls. Well, or do nothing. The good news is that the stored procedure added to the insert/update/delete triggers of your DBC tables don't rely on \_VFP.Transactions being established beforehand, the first trigger queueing the first record of the first table involved in any modification by SQL or xbase code will also establish \_VFP.Transactions. It's still recommended that you take it into your hands to do so, which also is a very simple single line of code in your main.prg:
 
 ```
-Open Database _yourdatabase_.dbc && which includes the stored procedures of VFPTransactionlog
-Set Database To _yourdatabase_
+Open Database ("c:\path\to\yourdatabase.dbc") && which includes the stored procedures of VFPTransactionlog
+Set Database To yourdatabase
 dbcCreateObject("TransactionLogManager")
 ```
 And then watch it work. By default this will establish a subdirectory yourdatabaseLog where all log related data will be created. The srtructure of which is described in documentation of the project.
 
-And now? Do you need to change your code base to do anything in transactions so they are getting attention deom the TransactionLogManager? No. VFPTransactions actually also works without establishing transactions in your project, becasue it also autocommits changes by timer, it's only missing anything you do in tables not covered by triggers of a DBC, but that's just obviously leaving the scope of the Trnansaction log covering all tables of a DBC.
+And now? Do you need to change your code base to do anything in transactions so they are getting attention deom the TransactionLogManager? Yes, as said above when you make use of manual transactions by now, the three native commands need to be redirected to VFPTransaction methods. But VFPTransactions actually also works without establishing transactions in your project, becasue it also autocommits changes by timer, it has to manage any changes of dbc tables not happening in transaction, too and does so by also establishing management objects for transaction level 0. it's only missing anything you do in tables not covered by triggers of a DBC, but that's just obviously leaving the scope of the Trnansaction log covering all tables of a DBC.
 
 Everything about VFPTransactions is contained within the stored procedures, so there is no way of stepping on your own foot by unloading any classlibraries from meory. The destroy events of all involved classes are doing their best to gracefully exit all transactions and put the transaction log in a healthy state. VFPTrnansactions therefore also hooks into the ON SHUTDOWN event. Whatever you want to do there, establish your ON SHUTDOWN first, for example ON SHUTDOWN QUIT or ON SHUTDOWN DO tidyup() and the initiqalisation of the TransactionLogManager will override this with its own release call, but within that release will finally change back to what you defined beforehand.
 
