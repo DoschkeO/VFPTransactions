@@ -30,7 +30,7 @@ BEGIN TRANSACTION must be replaced by _vfp.Transactions.Begin(Set('DataSession')
 END TRANSACION must be replaced by _vfp.Transactions.End(Set('DataSession'))
 ROLLBACK must be replaced by _vfp.Transactions.Rollback(Set('DataSession'))
 ```
-This can be done 1:1 at any place without putting any deeper thought to it. Even if your framework makes use of these VFP commands in objects managing transactions this way itself, VFPTransactions will just add a further layer to this and take over making the actual VFP command calls to really begin, end/commit or rollback transactions.
+This can be done 1:1 at any place without putting any deeper thought to it. Even if your framework makes use of these VFP commands in objects managing transactions this way itself, VFPTransactions will just add a further layer to this and take over making the actual VFP command calls to really begin, end/commit or rollback transactions. And I really mean, don't begin questioning this. Even the parameter Set("Datasession") has it's reasoning and can't be done within the Begin(),End(). and Rollback() methods, as the TransactionLogManager lives in its own datasession. Only the caller can pass in from which datasessionId the call comes from and for which datasession, therefore, the transaction should begin, end or roll back-
 
 One advantage of this is that objects will be created and stored in a collection within the VFPTransaction object world, that when destroyed for any reason - also system crashes - end with ROLLBACK by default. So any unplanned exit puts data back into the previously known valid state (as long as the crash isn't really something very disruptive like a power outage without a UPS).
 
@@ -61,6 +61,20 @@ _vfp.Transactions.Release()
 But you can obviously also make this call at any time you want to pause transactions and do some bulk operations not logged. Then reestablish it by dbcCreateObject("TransactionLogManager").
 
 It can take a while for \_vfp.Transactions to release as it also closes all transactions and finishes committing any data to DBC tables and the log. That's already all to know about using VFP Transactions.
+
+## Some highlights
+
+Some highlights to mention at this stage are how this all works despite the fact VFP is not a server, Stored procedures like everything else are running in client side processes. The downside of this is don't expect a simple log of a sequence of records in ne place. Log data is split into a hierarchical structure of directores, which include client computer names to have separate log locations for all clients using a DBC, even split by more unique identifiers like the uaser account name and process id, for the case several applications use the same DBC on the same client by the same windows user, too.
+
+Also VFP transactions are not just nested, there are nested transactions happening in parallel for any datasession you may use by forms with private datasession, too.
+
+VFPTransactions does use one simple sequence of logids that's created by VFPs fine autoninc integer type maintained in a logid.dbf which never keeps any records. Only the dbf header is used, where the nextvalue of such a counter is stored by VFP. Safe from any transactions, by the way. So no logid is given twice, not even in separated clients.
+
+The directory structure will have one transactionlog.dbc for all transactions in all times the DBC is used while VFPTransactions is established. There is a sessions subdirectory which will host further subdirectories per datasession and within these you'll find directores per transaction, also the non-transactioned level 0. You can actually find all data related to some transaction in these end levels. More on that structure in the next section. 
+
+But before I get into explaining what you find in which files a last highlight to mention here, is, that VFPTransactions both lets some of its tables participate in the transactions it manages and others not, so you find files that only persistend data which also is persisted in the DBC tables participating in the transactions, but you can also find what happened in the transactions and was rolled back. So this could even be used to recover things users may think are lost as they cancelled something instead of saving it.
+
+Astonishingly, though everything is queued in chronological order and gets a logid in chronological order, the log dbfs can easily have records stored out of order by logid. An index on this id is established to easily get rows of the log in order, but there are good reasons for this in the distributed nature of transactions. For example the transaction level 0 is discovered very early by the initialisation of VFPTransactions, but this discovery is only inserted into log dbfs when a timer commits queued data. What regularly happens is, that any trigger coming from a DBF stores head data about itself, the effected table and record number into meta head data about this trigger, and only after that the VFPTransactions system is establishing a record about the transaction start. It's nothing to worry about. Surely not a highlight to be happy about, but it's not a sign of malfunction. If you follow a coverage log of the work done by VFPTransacations it all beceoms a bit more logical, why things happen in the order they do. It's nevertheless very well worth noting that this also is a reson there is no foreign key constraint on the transactionlogid of all records part of that transaction, as the first records might get into log dbfs before the initialising record of a transaction, not only when the transaction isn't actually managed by a Transactionmanager class, as it is transactionlevel 0 or was already started by somehing else.
 
 ## The transaction log
 
