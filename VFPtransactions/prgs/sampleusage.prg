@@ -36,6 +36,9 @@ If loFSO.FolderExists(JustPath(lcDataDir))
    loFSO.CreateFolder(JustPath(lcDataDir))
    Doevents
 EndIf
+
+loFSO.CreateFolder(JustPath(lcDataDir))
+Doevents
 Copy Files (lcInitialDataDir) To (lcDataDir)
 
 * add stored procs to the copie database (just once, further calls just for updating procedures, when updates are available)
@@ -91,8 +94,6 @@ _VFP.Transactions.Begin(Set("Datasession"))
 Update orders set status = 1 where id = m.liOrderId
 _VFP.Transactions.End(Set("Datasession"))
 
-
-
 ? 'And now an order only nesting the last buffer saves into a transaction'
 * combined with a transaction only at the end of the process
 * from tableupdate storing the buffer to end
@@ -141,5 +142,3 @@ liOrderId = Orders.id
 * add an orderitem
 Insert Into OrderItems (orderid, productid) Values (m.liOrderId, 1)
 _VFP.Transactions.Rollback(Set("Datasession"))
-
-? "We'll see where this ends up in the log."
