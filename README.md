@@ -10,23 +10,13 @@ The working principle is establishing a ququ that takes in log info objecrts inc
 
 As should be known VFP transactions are actually not logged and the feature they offer is a reliable commit or rollback of all operatoins done within a transaction. The few transactin related commnds in VFP are quite self explanatory BEGIN TRANSACTION begins a manual transaction, END TRANSACTION commmits it, ROLLBACK rolls back changes made in a transaction and TXNLevel() is a function returning the current transaction level of the current datasession. Transactions can't be named, but TxnLevel() already hints on the ability to nest several transacations. The effect of transactions are rigorous locks on all DBFs involved in a transaction, whcih lock out any other user trying to do something with the same tables that are already involved in the transaction of another user, so the best practice is to keep them as short as possible. When you buffer all changes of a user in tables and finally have a save routine that commits the buffers that's the moment to start a transaction as best practice, store all buffers of tables invovled - for example an order and all its order details - to then commit the flushed buffers by ending the transaction or rolling back all changes when something fails. So far just a very breif description on how to make use of transactions in VFP.
 
-## Usage
+## Usage / Getting Started with VFPTransactions
 
-The technical part of it is that you should change your ways in only a very slight but subtle difference from directly using BEGIN TRANSACTION, END TRANSACTION, and ROLLBACK and use the methods VFP Transactions provides in the form of methods of a \_VFP.Transactions object, that is established for transaction logging.
+The technical part of it is that you only need to change your ways in a very slight but subtle difference from directly using BEGIN TRANSACTION, END TRANSACTION, and ROLLBACK and use the methods VFP Transactions provides in the form of methods of a \_VFP.Transactions object, that is established for transaction logging.
 
-## preparing your code base for usgae of VFPTransactions
+## preparing your code base for usage of VFPTransactions
 
-Make the follwing replacements in your code:
-```
-BEGIN TRANSACTION must be replaced by _vfp.Transactions.Begin(Set('DataSession'))
-END TRANSACION must be replaced by _vfp.Transactions.End(Set('DataSession'))
-ROLLBACK must be replaced by _vfp.Transactions.Rollback(Set('DataSession'))
-```
-This can be done 1:! at any place without putting any deeper thought to it. Even if your framework makes use of these VFP commands in objects managing transactions this way, VFPTransactions will just add a further layer to this and take over making the actual VFP calls to really begin, end&/commit or rollback a transaction.
-
-One advantage of this is objects will be created and stored in a collection within the VFPTransaction object world, that when destroyed for any reasons - also  system crashes - end with ROLLBACK by default. So any unplanned exit puts data back into the previouly known valid state (as long as the crash isn't really somethign very disruptive like a power outage without a UPS.
-
-Besdies these changes, obviously you have to add the VFPTransactions stored procedures to your DBC and set all insert/update/delete triggers to call into them. But that's also taken care of with a simple call of createorupdatetransactionlog.prg:
+Obviously the first step is to add the VFPTransactions stored procedures to your DBC and set all insert/update/delete triggers to call into them. But that's also taken care of with a simple call of createorupdatetransactionlog.prg:
 ```
 Do createorupdatetransactionlog WITH "c:\path\to\yourdatabse.dbc"
 ```
@@ -34,7 +24,19 @@ or when you prefer and CD into the prgs directory or add it to SET PATH and/or S
 ```
 createorupdatetransactionlog("c:\path\to\yourdatabse.dbc")
 ```
-Congratulations, you're almost there already.
+Congratulations, you're almost there already. To let VFPTransactions know of your transactions also make the follwing replacements in your code:
+```
+BEGIN TRANSACTION must be replaced by _vfp.Transactions.Begin(Set('DataSession'))
+END TRANSACION must be replaced by _vfp.Transactions.End(Set('DataSession'))
+ROLLBACK must be replaced by _vfp.Transactions.Rollback(Set('DataSession'))
+```
+This can be done 1:1 at any place without putting any deeper thought to it. Even if your framework makes use of these VFP commands in objects managing transactions this way itself, VFPTransactions will just add a further layer to this and take over making the actual VFP command calls to really begin, end/commit or rollback transactions.
+
+One advantage of this is objects will be created and stored in a collection within the VFPTransaction object world, that when destroyed for any reasons - also  system crashes - end with ROLLBACK by default. So any unplanned exit puts data back into the previouly known valid state (as long as the crash isn't really somethign very disruptive like a power outage without a UPS.
+
+Doing transactions this way you inform the TranactionLogManager to do a final commit on some transaction into the log so the queued data about this transaction doesn't linger in memory longer than the actual transaction. Which also tells why this is definitely not just an optional change. It's one of the major ingredients making VFPTransactions a possible transaction log mechanism - by knowing about your manual transactions. There are no native events happening that are triggered by starting or ending transactions and this is the most unobtrusive way of letting a transaction logger know about your transactions. It's not asking for much.
+
+Just a side note on the thoughtwork flowing into this: In the initialisation phase VFPTransactions establishes object for all current datasessions and their transaction level, but will not interfere in any of them. When a transaction level of any datasession already is >0, then some other code has established that connection. VFPTransaction notices this transaction but will neither end it or roll it back. It will still commit changes found to be done within such transactions to the log.
 
 ### establish the transaction log as first thing in your application code
 
