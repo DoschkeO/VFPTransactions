@@ -10,29 +10,33 @@ The working principle is establishing a queue that takes in log info objects inc
 
 As should be known VFP transactions are actually not logged and the feature they offer is a reliable commit or rollback of all operations done within a transaction. The few transaction-related commands in VFP are quite self-explanatory BEGIN TRANSACTION begins a manual transaction, END TRANSACTION commits it, ROLLBACK rolls back changes made in a transaction and TXNLevel() is a function returning the current transaction level of the current datasession. Transactions can't be named, but TxnLevel() already hints on the ability to nest several transactions. The effect of transactions is rigorous locks on all DBFs involved in a transaction, which lock out any other user trying to do something with the same tables that are already involved in the transaction of another user, so the best practice is to keep them as short as possible. When you buffer all changes of a user in tables and finally have a save routine that commits the buffers that's the moment to start a transaction as best practice, store all buffers of tables involved - for example, an order and all its order details - to then commit the flushed buffers by ending the transaction or rolling back all changes when something fails. So far just a very brief description on how to make use of transactions in VFP.
 
+The technical part of it is that you only need to change your ways in a very slight but subtle difference from directly using BEGIN TRANSACTION, END TRANSACTION, and ROLLBACK and use the methods VFPTransactions provides in the form of methods of a \_VFP.Transactions object, that is established for transaction logging.
+
 ## Usage / Getting Started with VFPTransactions
 
-The technical part of it is that you only need to change your ways in a very slight but subtle difference from directly using BEGIN TRANSACTION, END TRANSACTION, and ROLLBACK and use the methods VFPTransactions provides in the form of methods of a \_VFP.Transactions object, that is established for transaction logging.
+Before you go into any detail you can test VFPTransactions on a sampledatabase coming with it that does a minimal test of the overall system and documents the steps of getting started. Open the porject (confirm the new home directory, obviously) and start sampleusage.prg, then you're in the middle of using the system.
 
 ## Preparing your codebase for the usage of VFP   Transactions
 
-Obviously the first step is to add the VFPTransactions stored procedures to your DBC and set all insert/update/delete triggers to call into them. But that's also taken care of with a simple call of createorupdatetransactionlog.prg:
+Going through all thatÄs done in that sampleusage.prg, obviously the first step is to add the VFPTransactions stored procedures to your DBC and set all insert/update/delete triggers to call into them. That's taken care of with a simple call of createorupdatetransactionlog.prg:
 ```
-Do createorupdatetransactionlog WITH "c:\path\to\yourdatabase.dbc"
+Do create_or_alter_vfptransactions_storedprocedures WITH "c:\path\to\yourdatabase.dbc"
 ```
 or when you prefer and CD into the PRGS directory or add it to SET PATH and/or SET PROCEDURE:
 ```
-createorupdatetransactionlog("c:\path\to\yourdatabase.dbc")
+create_or_alter_vfptransactions_storedprocedures("c:\path\to\yourdatabase.dbc")
 ```
+The sampleusage.prg does this stel in line 42 after first copying a sampledata.dbc, that in itself has no data yet but is already prepared with VFPS referential integrity stored procs and triggers in several tables calling them. The code in create_or_alter_vfptransactions_storedprocedures takes the given DBC, adds VFPTransactions Procedures from vfptransactions_storedprocedures.prg and then alters the insert/update/delete trigger calls from referntial integrity or adds its own calls in as first and only call. I fear VFP referential integrity generator will not be as cooperative when you change rules and let it rgenerate procedures, it'll simply overwrite the trigger calls in the table properties, but no problem, VFPTransactions can add itself back when you call it after every new update of VFP referential integrity. It's just demonstrating the compatibility with whatever triggers you have in your database anyway.
+
 Congratulations, you're almost there already. To let VFPTransactions know of your transactions also make the following replacements in your code:
 ```
 BEGIN TRANSACTION must be replaced by _vfp.Transactions.Begin(Set('DataSession'))
 END TRANSACION must be replaced by _vfp.Transactions.End(Set('DataSession'))
 ROLLBACK must be replaced by _vfp.Transactions.Rollback(Set('DataSession'))
 ```
-This can be done 1:1 at any place without putting any deeper thought to it. Even if your framework makes use of these VFP commands in objects managing transactions this way itself, VFPTransactions will just add a further layer to this and take over making the actual VFP command calls to really begin, end/commit or rollback transactions. And I really mean, don't begin questioning this. Even the parameter Set("Datasession") has its reasoning and can't be done within the Begin(), End(). and Rollback() methods, as the TransactionLogManager lives in its own datasession. Only the caller can pass in from which datasessionId the call comes from and for which datasession, therefore, the transaction should begin, end or rollback.
+This can be done 1:1 at any place without putting any deeper thought to it. Even if your framework makes use of these VFP commands in objects managing transactions this way itself, VFPTransactions will just add a further layer to this and take over making the actual VFP command calls to really begin, end/commit or rollback transactions. And I really mean, don't begin questioning this. Everrything in that has it's reasoning also the parameter Set("Datasession"). It can't be done within the Begin(), End(). and Rollback() methods, as the TransactionLogManager lives in its own datasession. Only the caller can pass in from which datasessionId the call comes from and for which datasession, therefore, the transaction should begin, end or rollback. To explain why would need a few lessons on how datasessions are switched when VFP siwtches context between objects, not only to forms with a private datasession or session objects.
 
-One advantage of this is that objects will be created and stored in a collection within the VFPTransaction object world, that when destroyed for any reason - also system crashes - end with ROLLBACK by default. So any unplanned exit puts data back into the previously known valid state (as long as the crash isn't really something very disruptive like a power outage without a UPS).
+One advantage of the way VFPTrmnsactions manages transactions is that objects will be created and stored in a collection within the VFPTransaction object world, that when destroyed for any reason - also system crashes - end with ROLLBACK by default. So any unplanned exit puts data back into the previously known valid state (as long as the crash isn't really something very disruptive like a power outage without a UPS).
 
 Doing transactions this way you inform the TranactionLogManager to do a final commit on some transaction into the log so the queued data about this transaction doesn't linger in memory longer than the actual transaction. Which also tells why this is definitely not just an optional change. It's one of the major ingredients making VFPTransactions a possible transaction log mechanism - by knowing about your manual transactions. There are no native events happening that are triggered by starting or ending transactions and this is the most unobtrusive way of letting a transaction logger know about your transactions. It's not asking for much.
 
@@ -80,4 +84,66 @@ An observation I made in testing it, though everything is queued in chronologica
 
 ## The transaction log
 
-To be continued
+I won't go into all details of what the transaction log data is and means, just a few pointers here where to find the most important data about the log.
+
+### 1. directory level \yourdbcLog\
+
+1. Within a new subfolder of your DBC called yourdbcLog you find a transactionlog.dbc, which is the database container of all the DBFs within the same folder. VFPTransactionlogs creates a very detailed substructure about what happened, but on this level you will actually see all the root data of all events, which mainly are the triggers causeing VFPTransactions to log them but also some internal events, the initialisation and release, creating or discovering running datasessions and transactionlevels. The types of events have a single letter in a cLogType field:
+I - Init
+s - session discovered (iSessionId, iTransactionlevel tell the main identifiers about it)
+t - transaction discovered or started (again iSessionId, iTransactionlevel identifies which one). 
+    Here the iLogId also becomes the itransactionlogid of all events and meta data records that happen within the transaction
+T - triggers. These are the usual entry points, if a log entry is not initiated from you calling the \_vfp.Transactions.Begin() method.
+    And this should also explain to you where "discovered" sessions and transactions come from. A trigger tells VFPTransaction in which datasessionid
+    and transaction level it happens. Then VFPTransactions does not know this combination by now this is causing cLogType = "s" and "t" entries.
+R - Release
+This field and other info is found in multiple tables, but mainly in alltransactionevents.dbf
+
+You will find this data repeated and split into relevant types. Tables with your databasename as prefix will only contain cLogType = 'T' events, the triggers, so just the main actors in contributing the data to the log. For any session/transaction a trigger happens in a specific table is generated. This does not mean every single transaction will cause a table here, for example YOURDATAtriggerevents_s1_t1 will contain all trigger events coming from the default datasesion 1 and in a transaction level 1, whcih could be a majority of all events, when you don't use forms with private datasession. The Sessions and Tranasactions tables will jsut contain the cLogType='s' and cLogType='t' events.
+
+You find repeats and more and more specialised filtered parts of the data in the sessions subfolders, so lets go stright to the end leaves of this, where you find the data that will likely interest you much more than all the meta data.
+
+### 2. directory level \yourdbcLog\sessions
+
+On this level no concrete dbc and dbf is created, but every datasession will have a directory in here, which is dscribed in the next section. Just note this directory keeps the clutter of names from the root transactionlog.dbc directory, all details are in the one \sessions\ directory.
+
+### 3. directory level \yourdbcLog\sessions\logid\_N\_sM\_computername\_winaccountname\_processid
+
+Evreything in the log gets a logid, and the events that cause such an organsiational folder to be created also get an id and put it into the directory nmame. The directores of sessions thereby sort by their name and the N in logid\_N\_sM\_computername\_winaccountname\_processid os the log id. The part \_sM\_ stands for session and M is the session id - Set("Datasession"). The rest is to have a unique name. Since VFP is not a server this creates directories per process of a specific user on a specific client. Which also means no two clients clash in concurrent file access of log files other than in the root and sessions folder. But surely not in the more important details in the next lebel described in the 4th directory level section.
+
+Within these specific session folders you'll find a sessionlog.dbc and Sessions and Transactions dbfs about the log infos of cLogType='s' and 't', not that interesting, but still just filtered for a single session id, so anything that happens in a certain session number. 
+
+### 4. directory level \yourdbcLog\sessions\logid\_N\_sM\_computername\_winaccountname\_processid\logid\_3\_s1\_t0
+
+\logid\_3\_s1\_t0 are a little easier to decode with everythign you already know. Obvisouly this is just shortly noting the logid of the single transaction stored in such a folder and the sesion id and transaction level in which it happens. But the data within is foinally getting down to the core data loged, the data coming from your DBFs.
+
+Ever folder in thes level has a logdetails.dbc, which seems overkill but makes each folder independently movable for purposes like replication of data. All data is obviously indirectly connected by the logid you find in most log tables, but any folder is self contained with it's own dbc (if there is one) and dbfs. Here the Sessions. and Transactions tbles each should only have 1 record that is the session/transaction level, again, so the major players in this directory are the DBFs named after your tables. The table with Meta suffix contains the same type of data I already described, but the other table will have the same table structure as your original tables. This is where the data is logged.
+
+So here you find all the records that where modified in the single transaction. Besides that, you find the Meta data to refer to some things that can't actually be persisted within the record itself, the DELETED() status and the recno the record had at log time. The ecno especially is negative for buffered records, as they actuylla are not yet stored in a dbf, but their insert/update and even their delete cause table triggers and so this logging. So even before thy get flushed from the buffer into the DBF files they become saved here and even if they are deleted and reverted this reflects here. The TABLEUPDATE() comand, which commits the bufer to the DBF almost like a transaction comit will not cause another trigger, so it becomes more important to give your tables a primary key Id column that identifies which record actually was logged.
+
+The obvious last question will be about the composition of the dbf names, so let's look at one in detail -  For example: ORDERScrc933918722.dbf
+Well, obviously thats an ORDERS.DBF copy, but what about the crc933918722 part. Well, if such tables are generated and would on higher level directories also aggregate data of multiple transactions up to the full history of all recrods, this will only work as long as tables don't change their structure and you never add a field or change a field size. VFPTranasactions reflects this with a crc checksum of the datatypes and other information taken from an AFIELDS array. If your table structure changes but the name stays, you still will have a separate name here.
+
+So this was a roundtrip through the files in the transaction log subdirectory structure. Fell free to modify the DataLogger class to your needs and maybe simplify this srtructure. My goal was to actually be able to have separate files per single transaction and still some head info on a root level. That's obvioulsy achieved.
+
+## The code
+
+Last not least, I hope you find this a useful addition of a DBC. It's now also up to you how you extend this. All essential code for the logging is found in the vfptransactions_storedprocedures.prg. This has a good portion of comments describing how it works. Let me just poiint out the major architecture as already described in the first section of thie readme.md about the VFPTransactions in general.
+
+### TransactionLogManager and the manager hiewrarchy
+
+The class that is bringing up all the infrastructure besides itself is the TransactionLogManager. It's always the root object for any firther substrcuture. The TransactionLogManager is inheriting from SessionManager, as the Sessionmanager is the closest similar class to it, the TransactionLogmanager just has the additional initialisation part and orchestrates other objects around it. The TransactionLogmanager keeps track of a Sessionmanagers, of which each one is responsible for one datasession. The sessionmanagers in turn manage a list of Transactionmanagers, which are actually the instances encapsulating the VFP transaction commands in their init and destroy. Besdies that, the Sessionmanagers each have their own Sessionlogger handling the data logging itself and the Transationmanagers start a TransactionLogger for that matter. The loggers and managers all inherit from a base class DataLogger that is the foundation of all logging done.
+
+Obviously the Queue and Timer have a special meaning as single instances surrounding thes hierarchy of managers. The last part are just two procedureal stored procvedures, which the triggers of the database tables will call, one creating a log object as first step of the logging, the other being called with that object and the result of the trigger call that previsouly was set, for eample as here by VFP referential integrity. 
+
+### LogRecord()
+
+The LogRecord procedure is the inner call that creates a log object, which besides a record object of the table fields hasmeta data like LigId, recno, deleted staus, time of the log, datasession and transactionlevel. This is mainly just created as first, to avoid some overriding by the previous triggger code. 
+
+### VFPLog()
+
+This is the outer function called by the trigger and besides respecting the .F./.T. decision referential integrity code does, for example, it just puts the log info on a queue and returns back to the application code. In a DBC with no trigger code before establishing VFPTransactions, you get a call that merely takes in the logobject result and then puts it on the TransactionLogQueue.
+
+### Log Queue and Timer
+
+The Queue and Timer are somewhat the real root instead of the TransactionLogManager, but indeed the TransAtionLogmanager creates them with itself and his managers hierarchy. The Queue is feed by the trigger procedures and the Timer then is the final puzzle piece, that takes care for processing the ququed log info objects. The timer has a quite short interval, but it'll only stay active as long as the queue count is >0. It'll try to process as many log items as it can and then actually sleep when count becomes 0. The timer events disables the timer to avoid being triggered before it finishes on one side, but on the other side the timer will not need to be kept "alive" when the triggers are thre to activate the timer again when something new arrives in the queue, so that is used to keep the timer as inactive as it can to not steal process time from the rest of the application.
