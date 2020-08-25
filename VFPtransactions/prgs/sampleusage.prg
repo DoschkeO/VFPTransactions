@@ -13,7 +13,7 @@ Local lcInitialDataDir, lcDataDir, lcSampledataDBC
 Clear
 Cd Addbs(JustPath(Sys(16)))
 lcInitialDataDir = Sys(2014,JustPath(Sys(16))+'\..\initialdata\*.*')
-lcDataDir        = Sys(2014,JustPath(Sys(16))+'\..\data\*.*')
+lcDataDir        = Sys(2014,JustPath(Sys(16))+'\..\data_with_log'+Sys(2015)+'\*.*')
 lcSampledataDBC  = JustPath(m.lcDataDir)+'\sampledatabase.dbc'
 
 *? lcInitialDataDir
@@ -25,23 +25,16 @@ If ADir(laFiles,lcInitialDataDir)<11
    Return .F.
 EndIf 
 
+If Pemstatus(_vfp,'Transactions',5) And Vartype(_vfp.Transactions)='O'
+   _vfp.Transactions.Release()
+Endif
 Close Tables All
 Close Databases All
 
-Local  loFSO
-loFSO = CREATEOBJECT('Scripting.FileSystemObject')
-If loFSO.FolderExists(JustPath(lcDataDir))
-   loFSO.MoveFolder(JustPath(lcDataDir),JustPath(lcDataDir)+Sys(2015))
-   Doevents
-   loFSO.CreateFolder(JustPath(lcDataDir))
-   Doevents
-EndIf
-
-loFSO.CreateFolder(JustPath(lcDataDir))
-Doevents
+MkDir (JustPath(lcDataDir))
 Copy Files (lcInitialDataDir) To (lcDataDir)
 
-* add stored procs to the copie database (just once, further calls just for updating procedures, when updates are available)
+* add stored procs to the copied database (just once, further calls just for updating procedures, when updates are available)
 create_or_alter_vfptransactions_storedprocedures(lcSampledataDBC)
 
 * Step 2 Start VFPTransactions
@@ -93,6 +86,8 @@ EndIf
 _VFP.Transactions.Begin(Set("Datasession"))
 Update orders set status = 1 where id = m.liOrderId
 _VFP.Transactions.End(Set("Datasession"))
+
+
 
 ? 'And now an order only nesting the last buffer saves into a transaction'
 * combined with a transaction only at the end of the process

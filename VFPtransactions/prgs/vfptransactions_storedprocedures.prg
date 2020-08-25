@@ -76,22 +76,22 @@ Procedure LogRecord()
 
    * LogInfo
    AddProperty(m.loLogInfo, 'cLogType'          , 'T'                              ) && Trigger
+   AddProperty(m.loLogInfo, 'iLogId'            , 0                                )
+   AddProperty(m.loLogInfo, 'iTransactionLogId' , 0                                )
    AddProperty(m.loLogInfo, 'oRecord'           , loRecord                         )
    AddProperty(m.loLogInfo, 'lLogRecord'        , .T.                              )
+   AddProperty(m.loLogInfo, 'tLogTime'          , Datetime()                       )
    AddProperty(m.loLogInfo, 'iRecno'            , Recno()                          )
    AddProperty(m.loLogInfo, 'lDeleted'          , Deleted()                        )
    AddProperty(m.loLogInfo, 'cTrigger'          , tcTrigger                        )
-   AddProperty(m.loLogInfo, 'tLogTime'          , Datetime()                       )
    AddProperty(m.loLogInfo, 'iLogStatus'        , LOGSTATUSINFOCREATED             )
-   AddProperty(m.loLogInfo, 'iLogId'            , 0                                )
-   AddProperty(m.loLogInfo, 'iTransactionLogId' , 0                                )
    AddProperty(m.loLogInfo, 'mDBF'              , Dbf()                            )
    AddProperty(m.loLogInfo, 'mDBC'              , Dbc()                            )
    AddProperty(m.loLogInfo, 'mCursorDBC'        , Lower(CursorGetProp('Database')) )
    AddProperty(m.loLogInfo, 'cLogTablenameExpr' , .Null.                           )
    AddProperty(m.loLogInfo, 'cMetaTablenameExpr', .Null.                           )
-   AddProperty(m.loLogInfo, 'iTransactionLevel' , Txnlevel()                       )
    AddProperty(m.loLogInfo, 'iDatasessionId'    , Set('DataSession')               )
+   AddProperty(m.loLogInfo, 'iTransactionLevel' , Txnlevel()                       )
    AddProperty(m.loLogInfo, 'mCaller'           , Sys(16,Max(0,Program(-1)-1))+Id())
 
    Return m.loLogInfo
@@ -474,12 +474,12 @@ Define Class TransactionLogManager As SessionManager
             * LogInfo
 
             AddProperty(m.loLogInfo, 'cLogType'          , 'I'                               ) && init
+            AddProperty(m.loLogInfo, 'iLogId'            , This.LogId()                      )
             AddProperty(m.loLogInfo, 'lLogRecord'        , .F.                               )
             AddProperty(m.loLogInfo, 'tLogTime'          , Datetime()                        )
-            AddProperty(m.loLogInfo, 'iLogId'            , This.LogId()                      )
             AddProperty(m.loLogInfo, 'iLogStatus'        , LOGSTATUSLOGGED                   )
-            AddProperty(m.loLogInfo, 'iTransactionLevel' , Txnlevel()                        )
             AddProperty(m.loLogInfo, 'iDatasessionId'    , Set('DataSession')                )
+            AddProperty(m.loLogInfo, 'iTransactionLevel' , Txnlevel()                        )
             AddProperty(m.loLogInfo, 'mDBC'              , 'all'                             )
             AddProperty(m.loLogInfo, 'cLogTablenameExpr' , .Null.                            )
             AddProperty(m.loLogInfo, 'cMetaTablenameExpr', .Null.                            )
@@ -742,12 +742,13 @@ Define Class TransactionLogManager As SessionManager
       Lparameters tlDontReleaseSystem, tlQuit
 
       If This.lReleased
-         * for the case On Shitdown calls release,
+         * for the case On Shutdown calls release,
          * release eventually starts the quittimer
          * the quit from there eventually causes the Destroy
-         * which calls release again, this time with tkQuit = .F.
+         * which calls release again, this time with tlQuit = .F.
 
-         * It's fine, but won't release any more things, so just return:
+         * That's fine, but won't release any more things, 
+         * so just return:
          Return
       Endif
       This.lReleased = .T.
@@ -758,12 +759,12 @@ Define Class TransactionLogManager As SessionManager
       * LogInfo
 
       AddProperty(m.loLogInfo, 'cLogType'          , 'R'                               ) && Release
+      AddProperty(m.loLogInfo, 'iLogId'            , This.LogId()                      )
       AddProperty(m.loLogInfo, 'lLogRecord'        , .F.                               )
       AddProperty(m.loLogInfo, 'tLogTime'          , Datetime()                        )
-      AddProperty(m.loLogInfo, 'iLogId'            , This.LogId()                      )
       AddProperty(m.loLogInfo, 'iLogStatus'        , LOGSTATUSLOGGED                   )
-      AddProperty(m.loLogInfo, 'iTransactionLevel' , Txnlevel()                        )
       AddProperty(m.loLogInfo, 'iDatasessionId'    , Set('DataSession')                )
+      AddProperty(m.loLogInfo, 'iTransactionLevel' , Txnlevel()                        )
       AddProperty(m.loLogInfo, 'mDBC'              , 'all'                             )
       AddProperty(m.loLogInfo, 'cLogTablenameExpr' , .Null.                            )
       AddProperty(m.loLogInfo, 'cMetaTablenameExpr', .Null.                            )
@@ -919,9 +920,13 @@ Define Class SessionManager As DataLogger
       Lparameters toLogInfo, tlHeadlog
       Local Array laDir[1]
 
+      Local loTransactionManager
+      loTransactionManager = This.GetTransactionByLevel(Txnlevel())
+      If !IsNull(m.loTransactionManager)
+         toLogInfo.iTransactionLogId = m.loTransactionManager.oTransactionLogger.iTransactionLogId
+      EndIf 
+
       If Not m.tlHeadlog
-         Local loTransactionManager
-         loTransactionManager = This.GetTransactionByLevel(Txnlevel())
          m.toLogInfo.iLogStatus = LOGSTATUSLOGGED
          m.loTransactionManager.Log(m.toLogInfo)
       Endif
@@ -1163,11 +1168,11 @@ Define Class SessionLogger As DataLogger
          loLogInfo = Createobject('empty')
          * LogInfo
          AddProperty(m.loLogInfo, 'cLogType'          , 's'                              ) && Session
+         AddProperty(m.loLogInfo, 'iLogId'            , m.liLogId                        )
+         AddProperty(m.loLogInfo, 'iTransactionLogId' , 0                                )
          AddProperty(m.loLogInfo, 'lLogRecord'        , .F.                              )
          AddProperty(m.loLogInfo, 'tLogTime'          , Datetime()                       )
          AddProperty(m.loLogInfo, 'iLogStatus'        , LOGSTATUSINFOCREATED             )
-         AddProperty(m.loLogInfo, 'iLogId'            , m.liLogId                        )
-         AddProperty(m.loLogInfo, 'iTransactionLogId' , 0                                )
          AddProperty(m.loLogInfo, 'iDatasessionId'    , This.iForSessionId               )
          AddProperty(m.loLogInfo, 'iTransactionLevel' , This.iInitialTransactionLevel    )
          AddProperty(m.loLogInfo, 'mLogDir'           , Justpath(This.cLogDBC)           )
@@ -1320,13 +1325,13 @@ Define Class TransactionLogger As DataLogger
       Local loLogInfo
       loLogInfo = Createobject('empty')
       * LogInfo
+      AddProperty(m.loLogInfo, 'cLogType'          , 't'                              ) && Transaction
       AddProperty(m.loLogInfo, 'iLogId'            , This.iTransactionLogId           )
       AddProperty(m.loLogInfo, 'iTransactionLogId' , This.iTransactionLogId           )
-      AddProperty(m.loLogInfo, 'iDatasessionId'    , This.iForSessionId               )
-      AddProperty(m.loLogInfo, 'iTransactionLevel' , This.iForTransactionLevel        )
-      AddProperty(m.loLogInfo, 'cLogType'          , 't'                              ) && Transaction
       AddProperty(m.loLogInfo, 'lLogRecord'        , .F.                              )
       AddProperty(m.loLogInfo, 'tLogTime'          , Datetime()                       )
+      AddProperty(m.loLogInfo, 'iDatasessionId'    , This.iForSessionId               )
+      AddProperty(m.loLogInfo, 'iTransactionLevel' , This.iForTransactionLevel        )
       AddProperty(m.loLogInfo, 'iLogStatus'        , LOGSTATUSINFOCREATED             )
       AddProperty(m.loLogInfo, 'mLogDir'           , Justpath(This.cLogDBC)           )
       AddProperty(m.loLogInfo, 'mDBC'              , This.cLogDBC                     )
