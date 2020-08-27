@@ -219,7 +219,7 @@ Define Class DataLogger As Session
          Set Database To (This.cLogDBC)
       Catch
          Try
-            Open Database (This.cLogDBC)
+            Open Database (This.cLogDBC) Shared
             Set Database To (This.cLogDBC)
          Catch
             llCreate = .T.
@@ -227,7 +227,19 @@ Define Class DataLogger As Session
       Endtry
 
       If Not llCreate
-         Return
+         Return .T.
+      EndIf
+      
+      Local array laDir[1]
+      If ADir(laDir,This.cLogDBC) = 1
+         Try
+            Open Database (This.cLogDBC) Shared
+            Set Database To (This.cLogDBC)
+         Catch
+            *
+         EndTry
+         
+         Return .F.
       Endif
 
       * One difficulty in all of this: Within transactions some commands and functions are forbidden.
@@ -264,20 +276,44 @@ Define Class DataLogger As Session
       Fwrite(m.lnFH,Chr(7),1)
       Fclose(m.lnFH)
 
-      Select (m.lnCWA)
-      Open Database (This.cLogDBC)
+      If m.lnCWA>0 And m.lnCWA<>Select(0)
+         Select (m.lnCWA)
+      Endif
+      Open Database (This.cLogDBC) Shared
+      
+      Return .T.
    Endproc
 
    Procedure Log()
       Lparameters toLogInfo
 
       * determine log DBC and DBFs, eventually generate them
-      Local lcLogPath, lcLogDBC, lcLogAlias, lcLogDBF, lcLogMetaAlias, lcLogMetaDBF, lnField
+      Local lcLogPath, lcLogDBC, lcLogAlias, lcLogDBF, lcLogMetaAlias, lcLogMetaDBF, lnField, lnCWA
       Local Array laDir[1]
 
+      lnCWA = Select(0)
       lcLogPath = This.cLogPath
       lcLogDBC  = This.cLogDBC
-      This.OpenOrCreateLog()
+      If Not This.OpenOrCreateLog()
+         * no success this time, try again later
+         If m.lnCWA>0 And m.lnCWA<>Select(0)
+            Select (m.lnCWA)
+         Endif
+         Return .F.
+      EndIf 
+
+      If Not Used('alltransactionevents')
+         * important to get access
+         Use transactionlog!alltransactionevents In 0 Shared
+      Endif
+      If Not Used('alltransactionevents')
+         * no access to alltransactionevents.dbf? 
+         * then keep toLogInfo in the queue and try again later
+         If m.lnCWA>0 And m.lnCWA<>Select(0)
+            Select (m.lnCWA)
+         Endif
+         Return .F.
+      Endif
 
       If m.toLogInfo.lLogRecord And This.lLogRecord And This.lUseTableSignature And Type('m.toLogInfo.aTableDefinition',1)='A'
          Local lcTableSignature, lnField, lnCount
@@ -326,7 +362,7 @@ Define Class DataLogger As Session
 
             Create Cursor (Juststem(m.lcLogDBF)) From Array m.toLogInfo.aTableDefinition
             Copy To (m.lcLogDBF) Database (Juststem(m.lcLogDBC))
-            Use (m.lcLogDBF) Exclusive
+            Use (m.lcLogDBF) Shared
             CursorSetProp('Buffering',This.nBuffering)
          Endif
       Endif
@@ -341,21 +377,24 @@ Define Class DataLogger As Session
          Insert Into (m.lcLogDBF)  From Name m.toLogInfo.oRecord
       Endif
 
-      * finally always store meta data in alltransactionevents of main transactionlog.dbc:
-      If Not Used('alltransactionevents')
-         Use transactionlog!alltransactionevents In 0
-      Endif
-
+      * Finally always store meta data in alltransactionevents of main transactionlog.dbc:
       If Indexseek(m.toLogInfo.iLogId, .T. , 'alltransactionevents', 'xLogId')
          If !Eof('alltransactionevents') And alltransactionevents.iLogStatus <= m.toLogInfo.iLogStatus
-            lnCWA = Select(0)
             Select alltransactionevents
             Gather Name m.toLogInfo Memo
-            Select (m.lnCWA)
          Endif
       Else
-         Insert Into alltransactionevents From Name m.toLogInfo
+         *        Insert Into alltransactionevents From Name m.toLogInfo
+         Select alltransactionevents
+         Append Blank In alltransactionevents
+         Gather Name m.toLogInfo Memo
       Endif
+
+      If m.lnCWA>0 And m.lnCWA<>Select(0)
+         Select (m.lnCWA)
+      Endif
+
+      Return .T.
    Endproc
 
    Procedure CreateLogMetaDBF()
@@ -364,10 +403,9 @@ Define Class DataLogger As Session
          (iLogId I, iTransactionLogId I, cLogType C(1), iLogStatus I, iDataSessionId I, iTransactionLevel I, ;
          iRecno I, lDeleted L, cTrigger C(1), mCaller M, tLogTime T)
       Copy To (m.tcLogMetaDBF) Database (Juststem(This.cLogDBC))
-      Use (m.tcLogMetaDBF) Exclusive
+      Use (m.tcLogMetaDBF) Shared
       CursorSetProp('Buffering',This.nBuffering)
    Endproc
-
 Enddefine
 
 * DataSession=2 means this manager runs in a new separate Session.
@@ -406,6 +444,9 @@ Define Class TransactionLogManager As SessionManager
       Endif
 
       If llInstanciate
+         Set Exclusive Off
+         Declare Integer Sleep In Win32API Integer nMilliseconds
+
          If Not Pemstatus(_vfp,'Transactions',5)
             AddProperty(_vfp,'Transactions', .Null.)
             _vfp.Transactions = This
@@ -447,9 +488,11 @@ Define Class TransactionLogManager As SessionManager
                Create Cursor __od__logall ;
                   (iLogId I, iTransactionLogId I Null Default .Null., cLogType C(1), iLogStatus I, iDataSessionId I, iTransactionLevel I, ;
                   cTrigger C(1) Default ' ', mLogDir M, mCaller M, tLogTime T Default Datetime())
-               Index On iLogId Tag xLogId Candidate
+               Index On iLogId Tag xLogId && Candidate
+               * As appends turn out to be more stable working than inserts, as the dbf is already oprn
+               * I need to enable a shorthand double ilogid=0 from 2 processes, so no candidate index
                Copy To (m.lcLogAllDBF) Database transactionlog With Cdx
-               Use
+               Use (lcLogAllDBF) Shared
             Endif
 
             * Add LogQueue
@@ -485,7 +528,9 @@ Define Class TransactionLogManager As SessionManager
             AddProperty(m.loLogInfo, 'cMetaTablenameExpr', .Null.                            )
             AddProperty(m.loLogInfo, 'mLogDir'           , ''                                )
             AddProperty(m.loLogInfo, 'mCaller'           , Sys(16,Max(0,Program(-1)-1))+Id() )
-            This.Log(m.loLogInfo, .T., .T.)
+            If Not This.Log(m.loLogInfo, .T., .T.)
+               _vfp.TransactionLogQueue.Queue(m.loLogInfo)
+            Endif
 
             * LogTimer, processing the Log Queue, autocommitting log data
             If Not Pemstatus(_vfp,"TransactionLogTimer",5)
@@ -501,7 +546,9 @@ Define Class TransactionLogManager As SessionManager
             This.cOldShutdown = On('Shutdown')
             On Shutdown _vfp.Transactions.Release(.F., .T.)
 
-            Select (m.lnCWA)
+            If m.lnCWA>0 And m.lnCWA<>Select(0)
+               Select (m.lnCWA)
+            Endif
          Endif
       Endif
 
@@ -513,7 +560,6 @@ Define Class TransactionLogManager As SessionManager
       lcLogIdDBF = This.cLogIdDBF
 
       lnCWA = Select(0)
-
       Use (m.lcLogIdDBF) In Select("__od__log_id") Again Alias __od__log_id
       * MakeTransactable('__od__log_id')
       Begin Transaction
@@ -522,7 +568,9 @@ Define Class TransactionLogManager As SessionManager
       Rollback && Don't keep records in log dbf, just the autoinc nextvalue (that's not rolled back by design!)
 
       Use In Select("__od__log_id")
-      Select (m.lnCWA)
+      If m.lnCWA>0 And m.lnCWA<>Select(0)
+         Select (m.lnCWA)
+      Endif
 
       Return m.lnLogID
    Endproc
@@ -649,29 +697,33 @@ Define Class TransactionLogManager As SessionManager
    * It has to be public anyway, as tlog has be able to call it.
    * But imagine this to be a private procedure
    Procedure Log()
-      Lparameters toLogInfo, tlHeadlog, tlOnlyHeadLog
+      Lparameters toLogInfo, tlHeadlog, tlOnlyHeadLog, llSuccess
 
       Local lnCWA && fr remembering current workarea
       lnCWA = Select(0)
 
       If m.tlHeadlog
          m.toLogInfo.iLogStatus = LOGSTATUSHEADDATARECORDED
-         DataLogger::Log(m.toLogInfo)
+         llSuccess = DataLogger::Log(m.toLogInfo)
       Endif
 
       * secondary importance of logging is by the session manager
       * but for now it'll only delegate this to the Transsactionlogger
       * of the current TxnLevel().
-      If Not tlOnlyHeadLog
+      If m.llSuccess And Not tlOnlyHeadLog
          Local loSessionManager
          loSessionManager = This.GetOrCreateSessionManager(m.toLogInfo.iDataSessionId)
 
          If !Isnull(m.loSessionManager)
-            m.loSessionManager.Log(m.toLogInfo, tlHeadlog)
+            llSuccess = m.loSessionManager.Log(m.toLogInfo, tlHeadlog)
          Endif
       Endif
 
-      Select (m.lnCWA)
+      If m.lnCWA>0 And m.lnCWA<>Select(0)
+         Select (m.lnCWA)
+      EndIf
+      
+      Return m.llSuccess
    Endproc
 
    *
@@ -747,7 +799,7 @@ Define Class TransactionLogManager As SessionManager
          * the quit from there eventually causes the Destroy
          * which calls release again, this time with tlQuit = .F.
 
-         * That's fine, but won't release any more things, 
+         * That's fine, but won't release any more things,
          * so just return:
          Return
       Endif
@@ -770,7 +822,7 @@ Define Class TransactionLogManager As SessionManager
       AddProperty(m.loLogInfo, 'cMetaTablenameExpr', .Null.                            )
       AddProperty(m.loLogInfo, 'mLogDir'           , ''                                )
       AddProperty(m.loLogInfo, 'mCaller'           , Sys(16,Max(0,Program(-1)-1))+Id() )
-      This.Log(m.loLogInfo, .T., .T.)
+      =This.Log(m.loLogInfo, .T., .T.)
 
       _vfp.TransactionLogTimer.Enabled = .F.
 
@@ -784,6 +836,7 @@ Define Class TransactionLogManager As SessionManager
       If Not Vartype(This.oSessionManagers)='X'
          Do While This.oSessionManagers.Count>0
             This.oSessionManagers.Remove(This.oSessionManagers.Count)
+            Sleep(Int(Rand()*100))
          Enddo
       Endif
 
@@ -807,21 +860,21 @@ Define Class TransactionLogManager As SessionManager
                Removeproperty(_vfp,"TransactionLogTimer")
             Catch
                *
-            EndTry
-            
+            Endtry
+
             Try
                _vfp.TransactionLogQueue = .Null.
                Removeproperty(_vfp,"TransactionLogQueue")
             Catch
                *
-            EndTry
+            Endtry
 
             Try
                _vfp.Transactions = .Null.
                Removeproperty(_vfp,"Transactions")
             Catch
                *
-            EndTry
+            Endtry
          Endif
       Endif
 
@@ -920,20 +973,23 @@ Define Class SessionManager As DataLogger
       Lparameters toLogInfo, tlHeadlog
       Local Array laDir[1]
 
-      Local loTransactionManager
+      Local loTransactionManager, lnCWA, llSuccess
       loTransactionManager = This.GetTransactionByLevel(Txnlevel())
-      If !IsNull(m.loTransactionManager)
+      If !Isnull(m.loTransactionManager)
          toLogInfo.iTransactionLogId = m.loTransactionManager.oTransactionLogger.iTransactionLogId
-      EndIf 
-
-      If Not m.tlHeadlog
-         m.toLogInfo.iLogStatus = LOGSTATUSLOGGED
-         m.loTransactionManager.Log(m.toLogInfo)
       Endif
 
+      If Not m.tlHeadlog
+         llSuccess = m.loTransactionManager.Log(m.toLogInfo)
+         If m.llSuccess
+            m.toLogInfo.iLogStatus = LOGSTATUSLOGGED
+         EndIf
+      Endif
+
+      lnCWA = Select(0)
       If m.tlHeadlog
          * normal session head/meta data logging
-         This.oSessionLogger.Log(m.toLogInfo)
+         llSuccess = This.oSessionLogger.Log(m.toLogInfo)
 
          * Also taking care of a TransactionLogmanager task
          * in a datasession and transaction the transactionlogmanagre doesn't participate in
@@ -949,13 +1005,23 @@ Define Class SessionManager As DataLogger
                (iLogId I, iTransactionLogId I, cLogType C(1), iLogStatus I, iDataSessionId I, iTransactionLevel I, ;
                cTrigger C(1), mLogDir M, mCaller M, tLogTime T)
             Copy To (m.lcLogMetaDBF) Database transactionlog
-            Use
+            Use (m.lcLogMetaDBF) Shared
+            lcLogMetaAlias = Alias()
          Endif
-
-         Insert Into (m.lcLogMetaDBF) From Name m.toLogInfo
+         If !Used(lcLogMetaAlias)
+            Use (m.lcLogMetaDBF) In 0 Shared
+         Endif
+         Select (m.lcLogMetaAlias)
+         Append Blank In (lcLogMetaAlias)
+         Gather Name m.toLogInfo Memo
          * the rest will be done in This.Log() methoded called from LogTimer
       Endif
 
+      If m.lnCWA>0 And m.lnCWA<>Select(0)
+         Select (m.lnCWA)
+      Endif
+
+      Return m.llSuccess
    Endproc
 
    Protected Procedure GetTransactionIndex()
@@ -1074,11 +1140,17 @@ Define Class SessionManager As DataLogger
          Endif
       Endfor
 
+      Local loSessionLogger
       Try
-         This.oSessionLogger.CommitLog()
+         loSessionLogger = This.oSessionLogger
       Catch
          *
       Endtry
+      If Vartype(loSessionLogger)='O'
+         * run the commit itself outside Try..catch
+         * better for debugging
+         loSessionLogger.CommitLog()
+      Endif
    Endproc
 
    Procedure Destroy()
@@ -1231,7 +1303,6 @@ Define Class TransactionManager As Session
    lRollback = .T.
    lDontEnd  = .F.
    DataSession = 1 && 'default' datasession, begin/end/rollback transaction in same session, of course
-   oTransactionLogger = .Null.
 
    Procedure Init()
       Lparameters tcLogPath, tlDontBegin
@@ -1241,21 +1312,27 @@ Define Class TransactionManager As Session
       This.lDontEnd = m.tlDontBegin
       If Not m.tlDontBegin
          Begin Transaction
-      Endif
-
-      This.oTransactionLogger = Createobject('TransactionLogger', tcLogPath, Set("Datasession"), Txnlevel())
+      EndIf
+      
+      AddProperty(This, 'oTransactionLogger', Createobject('TransactionLogger', tcLogPath, Set("Datasession"), Txnlevel()))
    Endproc
 
    Procedure Log()
       Lparameters toLogInfo
-      This.oTransactionLogger.Log(m.toLogInfo)
+      Return This.oTransactionLogger.Log(m.toLogInfo)
    Endproc
 
    Procedure Destroy()
       * Last commit in logger
       Local liTransactionLogId
-      liTransactionLogId = This.oTransactionLogger.iTransactionLogId
-      This.oTransactionLogger = .Null.
+      If PemStatus(This,'oTransactionLogger',5) And Vartype(This.oTransactionLogger)='O'
+         liTransactionLogId = This.oTransactionLogger.iTransactionLogId
+      
+         This.oTransactionLogger = .NULL.
+         RemoveProperty(This, 'oTransactionLogger')
+      Else 
+         liTransactionLogId = -1
+      EndIf 
 
       If Not This.lDontEnd And Txnlevel()>0
          If This.lRollback
@@ -1263,12 +1340,14 @@ Define Class TransactionManager As Session
          Else
             End Transaction
          Endif
-
+      EndIf
+      
+      If liTransactionLogId >0
          * Log ststus update for liTransactionLogId = This.oTransactionLogger.iTransactionLogId
          Update transactionlog!alltransactionevents ;
             Set iLogStatus = Iif(This.lRollback, LOGSTATUSTRANSACTIONROLLEDBACK, LOGSTATUSTRANSACTIONCOMMITTED) ;
             Where iTransactionLogId = m.liTransactionLogId
-      Endif
+      EndIf 
    Endproc
 Enddefine
 
@@ -1288,6 +1367,7 @@ Define Class TransactionLogger As DataLogger
       If llInstanciate
          This.iForSessionId = m.tnForSessionId
          This.iForTransactionLevel = m.tnForTransactionLevel
+         Set Exclusive Off
          Set Multilocks On
 
          This.cLogPath = tcLogPath
@@ -1369,7 +1449,7 @@ Define Class TransactionLogger As DataLogger
 
    Procedure Destroy()
       #If DEBUGMODE
-          Debugout 'TransactionLogger calls LogQueue FinishTransaction for Session,Transaction ', This.iForSessionId, This.iForTransactionLevel 
+         Debugout 'TransactionLogger calls LogQueue FinishTransaction for Session,Transaction ', This.iForSessionId, This.iForTransactionLevel
       #Endif
       If Pemstatus(_vfp,"TransactionLogQueue",5) And Vartype(_vfp.TransactionLogQueue)="O"
          _vfp.TransactionLogQueue.FinishTransaction(This.iForSessionId, This.iForTransactionLevel , This)
@@ -1399,7 +1479,7 @@ Define Class EasyCollection As Collection
 
    Procedure Pile()
       Lparameters tvItem, tcKey
-      
+
       This.Add(m.tvItem, m.tcKey)
    Endproc
 
@@ -1442,22 +1522,22 @@ Define Class EasyQueue       As EasyCollection
 
    Procedure Queue(vItem)
       #If DEBUGMODE
-          debugout 'Queue() operation, size before', This.Count
-      #ENDIF
+         Debugout 'Queue() operation, size before', This.Count
+      #Endif
 
       This.Pile(vItem,Str(vItem.iLogId))
 
       #If DEBUGMODE
-          debugout 'Queue() operation, size after', This.Count
-      #ENDIF
+         Debugout 'Queue() operation, size after', This.Count
+      #Endif
    Endproc
 
    Procedure DeQueue()
       Local lvItem
 
       #If DEBUGMODE
-          debugout 'DeQueue() operation, size before', This.Count
-      #ENDIF
+         Debugout 'DeQueue() operation, size before', This.Count
+      #Endif
 
       If This.Count>0
          lvItem = This.Peek(1)
@@ -1467,8 +1547,8 @@ Define Class EasyQueue       As EasyCollection
       Endif
 
       #If DEBUGMODE
-          debugout 'DeQueue() operation, size after', This.Count
-      #ENDIF
+         Debugout 'DeQueue() operation, size after', This.Count
+      #Endif
 
       Return m.lvItem
    Endproc
@@ -1477,8 +1557,8 @@ Define Class EasyQueue       As EasyCollection
       Lparameters tvIndexOrKey
 
       #If DEBUGMODE
-          debugout 'Peek() operation, size before', This.Count
-      #ENDIF
+         Debugout 'Peek() operation, size before', This.Count
+      #Endif
 
       Local lvItem
 
@@ -1489,8 +1569,8 @@ Define Class EasyQueue       As EasyCollection
       Endif
 
       #If DEBUGMODE
-          debugout 'Peek() operation, size after', This.Count
-      #ENDIF
+         Debugout 'Peek() operation, size after', This.Count
+      #Endif
 
       Return m.lvItem
    Endproc
@@ -1500,8 +1580,8 @@ Define Class EasyQueue       As EasyCollection
       Local llDumped
 
       #If DEBUGMODE
-          debugout 'UnQueue() operation, size before', This.Count
-      #ENDIF
+         Debugout 'UnQueue() operation, size before', This.Count
+      #Endif
 
       tvIndexOrKey = Evl(m.tvIndexOrKey,1)
       If This.Count>0
@@ -1510,8 +1590,8 @@ Define Class EasyQueue       As EasyCollection
       Endif
 
       #If DEBUGMODE
-          debugout 'UnQueue() operation, size after', This.Count
-      #ENDIF
+         Debugout 'UnQueue() operation, size after', This.Count
+      #Endif
 
       Return llDumped
    Endproc
@@ -1520,20 +1600,26 @@ Enddefine
 Define Class LogQueue As EasyQueue
 
    Procedure Queue()
-      Lparameters toLogInfo, tlNoHeadlog
+      Lparameters toLogInfo, tlNoHeadlog, llSuccess
       Try
          If m.toLogInfo.iLogId = 0
             toLogInfo.iLogId = _vfp.Transactions.LogId()
-         EndIf
+         Endif
          #If DEBUGMODE
-            debugout 'queue time for '+Str(m.toLogInfo.iLogId)+' was', Seconds()
-         #ENDIF
+            Debugout 'queue time for '+Str(m.toLogInfo.iLogId)+' was', Seconds()
+         #Endif
          This.Pile(m.toLogInfo, Str(m.toLogInfo.iLogId))
-         m.toLogInfo.iLogStatus = LOGSTATUSQUEUED
          * notice at this stage the queue knows the log object, no matter what happens next
+         m.toLogInfo.iLogStatus = LOGSTATUSQUEUED
 
          If Not tlNoHeadlog
-            _vfp.Transactions.Log(m.toLogInfo, .T.)
+            If _vfp.Transactions.Log(m.toLogInfo, .T.)
+               If Not m.toLogInfo.lLogRecord
+                  This.Dump(Str(m.toLogInfo.iLogId))
+               Else
+                  m.toLogInfo.iLogStatus = LOGSTATUSHEADDATARECORDED
+               EndIf 
+            EndIf
          Endif
          * LOGSTATUSLOGGED, persisted storage of all vItem properties including the oRecord
          * will be achieved by _VFP.LogTimer.
@@ -1556,7 +1642,7 @@ Define Class LogQueue As EasyQueue
       Local loLogInfo, ltTimeout, lnItemIndex, lnLastCount
       ltTimeout = Datetime()+1
       * work for maximum 1 second
-      
+
       lnLastCount = This.Count+1
       Do While This.Count > 0 And This.Count < m.lnLastCount And Datetime()<ltTimeout
          lnLastCount = This.Count
@@ -1573,19 +1659,20 @@ Define Class LogQueue As EasyQueue
                   #If DEBUGMODE
                      Debugout 'log details'
                   #Endif
-                  _vfp.Transactions.Log(m.loLogInfo)
-                  m.loLogInfo.iLogStatus=LOGSTATUSLOGGED
+                  If _vfp.Transactions.Log(m.loLogInfo)
+                     m.loLogInfo.iLogStatus=LOGSTATUSLOGGED
+                  Endif
                   * remove from queue as it now IS processed
                   * (but in case of a crash of _VFP.Transactions,
                   * keep the Queue intact)
                   #If DEBUGMODE
-                      debugout 'unqueue time for '+Str(m.loLogInfo.iLogId)+' was', Seconds()
-                  #ENDIF                  
+                     Debugout 'unqueue time for '+Str(m.loLogInfo.iLogId)+' was', Seconds()
+                  #Endif
                   If Not This.UnQueue(Str(m.loLogInfo.iLogId))
-                     #If DEBUGMODE                         
-                         debugout "unqueue for "+Str(m.loLogInfo.iLogId)+" didn't work"
-                     #ENDIF                  
-                  EndIf 
+                     #If DEBUGMODE
+                        Debugout "unqueue for "+Str(m.loLogInfo.iLogId)+" didn't work"
+                     #Endif
+                  Endif
                Endif
 
                * LOGSTATUSQUEUED (1) -> LOGSTATUSHEADDATARECORDED (2)
@@ -1593,8 +1680,9 @@ Define Class LogQueue As EasyQueue
                   #If DEBUGMODE
                      Debugout 'log details'
                   #Endif
-                  _vfp.Transactions.Log(m.loLogInfo, .T.)
-                  m.loLogInfo.iLogStatus=LOGSTATUSHEADDATARECORDED
+                  If _vfp.Transactions.Log(m.loLogInfo, .T.)
+                     m.loLogInfo.iLogStatus=LOGSTATUSHEADDATARECORDED
+                  Endif
                   lnItemIndex = m.lnItemIndex + 1
                Endif
             Else
@@ -1613,7 +1701,7 @@ Define Class LogQueue As EasyQueue
       * Process all log info from that sessions transaction (it's about to finish)
 
       #If DEBUGMODE
-          Debugout 'Finish Transaction starts with Item Count', This.Count
+         Debugout 'Finish Transaction starts with Item Count', This.Count
       #Endif
 
       Local loLogInfo, ltTimeout, lnItemIndex
@@ -1628,26 +1716,27 @@ Define Class LogQueue As EasyQueue
                M.loLogInfo.iTransactionLevel = m.tnTransaction)
 
             #If DEBUGMODE
-                Debugout 'Process LogId', m.loLogInfo.iLogId
+               Debugout 'Process LogId', m.loLogInfo.iLogId
             #Endif
 
             If m.loLogInfo.iLogStatus<LOGSTATUSLOGGED
-               m.toLogger.Log(m.loLogInfo)
-               m.loLogInfo.iLogStatus=LOGSTATUSLOGGED
+               If m.toLogger.Log(m.loLogInfo)
+                  m.loLogInfo.iLogStatus=LOGSTATUSLOGGED
+               EndIf
             Endif
 
-            #If DEBUGMODE
-                debugout 'unqueue time for '+Str(m.loLogInfo.iLogId)+' was', Seconds()
-            #ENDIF
-            If This.UnQueue(Str(m.loLogInfo.iLogId))
+            If m.loLogInfo.iLogStatus=LOGSTATUSLOGGED And This.UnQueue(Str(m.loLogInfo.iLogId))
+               #If DEBUGMODE
+                  Debugout 'unqueue time for '+Str(m.loLogInfo.iLogId)+' was', Seconds()
+               #Endif
                * This reduces count by 1 and the same
                * lnItemIndex points to the next or previous Item
                * Anyway, we'll get to the next valid one
                * with the loop
             Else
                #If DEBUGMODE
-                   debugout "unqueue for "+Str(m.loLogInfo.iLogId)+" didn't work"
-               #ENDIF
+                  Debugout "unqueue for "+Str(m.loLogInfo.iLogId)+" didn't work"
+               #Endif
                * Diffcult item? Dkip it
                * should never happen, but to make sure
                * we progress through items:
@@ -1661,12 +1750,12 @@ Define Class LogQueue As EasyQueue
          If lnItemIndex > This.Count
             Exit
          Endif
-      EndDo
-      
+      Enddo
+
       #If DEBUGMODE
-          Debugout 'Finish Transaction ends with Item Count', This.Count
+         Debugout 'Finish Transaction ends with Item Count', This.Count
       #Endif
-      
+
    Endproc
 Enddefine
 
