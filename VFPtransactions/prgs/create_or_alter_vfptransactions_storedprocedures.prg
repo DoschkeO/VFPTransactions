@@ -63,21 +63,24 @@ EndIf
 lcDBCProcsFile = Addbs(Getenv("TEMP"))+Set("Database")+'_current_storedprocedures'+Sys(2015)+'.txt'
 Copy Procedures To (lcDBCProcsFile)
 lcDBCProcs = FileToStr(lcDBCProcsFile)
-
+Erase (lcDBCProcsFile)
+lcTransactionlogProcs = Filetostr(lcVFPTransactionslogProcsFile)
 lnStartpos = At('*** VFPTransactions BEGIN ***', lcDBCProcs)
 lnEndpos   = At('***  VFPTransactions END  ***', lcDBCProcs)+Len('***  VFPTransactions END  ***')
 
 If lnStartpos>0 And lnEndpos>0
    * existing VFP Transactions procedures found by header and footer comment lines
    * replace all code ebtween these positions with current procedures:
-   lcTransactionlogProcs = Filetostr(lcVFPTransactionslogProcsFile)
    lcDBCProcs = Stuff(lcDBCProcs, lnStartpos, lnEndpos-lnStartpos, lcTransactionlogProcs)
    Strtofile(lcDBCProcs, lcDBCProcsFile, .F.)
    Append Procedures From (lcDBCProcsFile) Overwrite
 Else
-   Append Procedures From (lcVFPTransactionslogProcsFile)
+   lcDBCProcs = lcTransactionlogProcs+CHR(13)+CHR(10)+lcDBCProcs
+   Strtofile(lcDBCProcs, lcDBCProcsFile, .F.)
+   Append Procedures From (lcDBCProcsFile) Overwrite
 EndIf
 Pack DATABASE 
+Erase (lcDBCProcsFile)
 Compile Database (lcDBC)
 
 Local lcOldSafety, lnCount, lcInsertTrigger, lcUpdateTrigger, lcDeleteTrigger
